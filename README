@@ -1,0 +1,197 @@
+Asistente RAG para PDFs
+Asistente de preguntas y respuestas basado en Retrieval-Augmented Generation (RAG). El proyecto indexa documentos PDF almacenados en data/pdfs/, guarda sus fragmentos y embeddings en ChromaDB y utiliza Groq para generar respuestas fundamentadas exclusivamente en el contenido recuperado.
+
+Incluye extracción de texto de PDFs digitales, OCR para páginas escaneadas, ingesta incremental y recuperación diversificada para evitar que una única fuente monopolice el contexto enviado al modelo.
+Características
+- Procesamiento de PDFs: extracción directa de texto cuando está disponible y OCR como alternativa para páginas escaneadas.
+- OCR con PyMuPDF y Tesseract: conversión de páginas a imágenes y reconocimiento de texto en español (spa).
+- Fragmentación configurable: división del contenido mediante RecursiveCharacterTextSplitter.
+- Ingesta incremental: identificación estable de fragmentos y actualización de los datos por documento de origen, sin borrar el resto de la colección.
+- Base de datos vectorial: almacenamiento persistente de embeddings en ChromaDB.
+- Recuperación diversificada: limita la cantidad de fragmentos recuperados por documento para aportar contexto de varias fuentes.
+- Respuestas fundamentadas: Groq recibe la pregunta y el contexto recuperado; el asistente debe indicar cuando ese contexto no contiene información suficiente.
+- Fuentes consultadas: muestra el nombre del documento y la página de los fragmentos utilizados.
+Arquitectura
+El proyecto se organiza en cinco módulos principales:
+Módulo	Responsabilidad
+config.py	Centraliza las rutas, variables de entorno y parámetros de configuración del OCR, la fragmentación, los embeddings, ChromaDB y Groq.
+pdf_loader.py	Carga los PDFs y extrae el texto de cada página. Cuando el texto extraído no alcanza el umbral configurado, utiliza OCR con PyMuPDF y Tesseract.
+embeddings.py	Inicializa el modelo multilingüe de embeddings y configura su ejecución normalizada en CPU.
+ingest.py	Orquesta la ingesta: carga los PDFs, divide el texto, filtra fragmentos pequeños, genera IDs estables y actualiza ChromaDB por documento de origen y en lotes.
+chat.py	Recupera fragmentos relevantes con diversidad de fuentes, construye el contexto, consulta a Groq y presenta la respuesta junto con las fuentes.
+
+
+Flujo de funcionamiento
+1. Ingestión de documentos
+Los PDFs que se encuentran en data/pdfs/ pasan por el siguiente proceso:
+1. Carga y extracción: load_pdf_with_ocr intenta extraer el texto de cada página.
+2. OCR cuando es necesario: si una página no contiene suficiente texto digital, se procesa como imagen mediante PyMuPDF y Tesseract con el idioma spa.
+3. Fragmentación: RecursiveCharacterTextSplitter divide el contenido en fragmentos de 1.000 caracteres, con un solapamiento de 150 caracteres.
+4. Filtrado: se descartan los fragmentos cuya longitud sea inferior a MIN_CHUNK_CHARS.
+5. Identificación estable: se generan IDs SHA1 para identificar los fragmentos de forma reproducible.
+6. Actualización por origen: se eliminan de ChromaDB únicamente los registros asociados al documento que se está reindexando.
+7. Inserción por lotes: los nuevos documentos y sus embeddings se incorporan a ChromaDB en lotes.
+8. Persistencia: la colección queda almacenada en chroma_db/.
+Este enfoque permite volver a procesar un PDF actualizado sin eliminar los vectores correspondientes a los demás documentos.
+2. Consulta al asistente
+Cuando el usuario realiza una pregunta:
+1. _retrieve_documents busca los 6 fragmentos más relevantes.
+2. La recuperación limita el resultado a un máximo de 2 fragmentos por documento y 3 documentos diferentes.
+3. Se construye el contexto incluyendo el contenido, el nombre del documento y el número de página.
+4. Se envían la pregunta y el contexto a ChatGroq, configurado con temperature=0.1.
+5. El modelo genera una respuesta basada en el contexto recuperado.
+6. El programa muestra la respuesta y las fuentes consultadas.
+La recuperación diversificada ayuda a incluir información de distintos documentos en una misma consulta, cuando existen resultados relevantes.
+Requisitos previos
+- Python 3.11
+- Tesseract OCR 5.5.3, con el archivo de idioma español spa.traineddata.
+- Una API Key de Groq.
+- Windows (los comandos de instalación y ejecución de esta guía están preparados para PowerShell).
+Tesseract es una dependencia del sistema: instalar el paquete Python pytesseract no instala por sí solo el motor OCR.
+
+Instalación
+1. Clonar el repositorio
+git clone https://github.com/USUARIO/rag-document-assistant.git
+cd rag-document-assistant
+Sustituye la URL por la dirección real del repositorio.
+2. Crear y activar el entorno virtual
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+Si PowerShell impide activar el entorno por la política de ejecución, puedes ejecutar los comandos siguientes usando directamente el intérprete de .venv, sin activar el entorno.
+3. Instalar las dependencias
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+4. Instalar Tesseract OCR en Windows
+1. Instala Tesseract OCR 5.5.3 para Windows.
+2. Durante la instalación, incluye el idioma español o descarga spa.traineddata desde el repositorio oficial de datos de Tesseract.
+3. Comprueba que el ejecutable tesseract.exe está disponible en el PATH.
+Comprueba la instalación:
+tesseract --version
+tesseract --list-langs
+La lista de idiomas debe incluir spa.
+
+Si Tesseract no está en el PATH, indica su ruta en la variable TESSERACT_CMD del archivo .env. Por ejemplo:
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+Ajusta la ruta a la ubicación real de tu instalación.
+5. Configurar las variables de entorno
+Crea un archivo .env en la raíz del proyecto:
+GROQ_API_KEY=PEGA_AQUI_TU_CLAVE
+GROQ_MODEL=MODELO_CONFIGURADO_EN_CONFIG
+TESSERACT_CMD=
+- GROQ_API_KEY: clave privada generada desde la consola de Groq.
+- GROQ_MODEL: identificador del modelo de Groq configurado para el proyecto.
+- TESSERACT_CMD: ruta a tesseract.exe si no está disponible en el PATH. Si ya está en el PATH, utiliza el valor vacío si así lo admite la configuración del proyecto.
+No compartas el contenido real de .env ni publiques la API Key.
+Configuración
+Los parámetros se centralizan en rag_assistant/config.py. Los valores efectivos son los definidos en ese archivo; si se modifican allí, esta tabla debe actualizarse para mantener la documentación sincronizada.
+Variable	Función	Valor
+COLLECTION_NAME	Nombre de la colección de ChromaDB.	documents
+CHUNK_SIZE	Tamaño máximo de los fragmentos.	1000
+CHUNK_OVERLAP	Solapamiento entre fragmentos consecutivos.	150
+OCR_LANG	Idioma o combinación de idiomas utilizada por Tesseract.	spa
+TESSERACT_CMD	Ruta al ejecutable de Tesseract, si no está en el PATH.	Vacío o ruta local
+MIN_TEXT_CHARS	Umbral de texto extraído para decidir si una página necesita OCR.	Según config.py
+MIN_CHUNK_CHARS	Longitud mínima para conservar un fragmento.	Según config.py
+OCR_DPI	Resolución utilizada al renderizar páginas para OCR.	Según config.py
+EMBED_BATCH_SIZE	Cantidad de textos procesados por lote al generar embeddings.	Según config.py
+GROQ_MODEL	Modelo de lenguaje utilizado por Groq.	Según config.py / .env
+
+
+Uso
+1. Añadir documentos
+Copia los PDFs que quieras consultar en:
+data/
+└── pdfs/
+    ├── documento_1.pdf
+    └── documento_2.pdf
+2. Ejecutar la ingesta
+Desde la raíz del repositorio:
+.\.venv\Scripts\python.exe -m rag_assistant.ingest
+El proceso lee los PDFs, extrae el texto, aplica OCR cuando corresponde, genera los fragmentos y actualiza la colección de ChromaDB.
+
+Puedes volver a ejecutar la ingesta cuando añadas o actualices documentos. La actualización se realiza por documento de origen.
+3. Iniciar el asistente
+.\.venv\Scripts\python.exe -m rag_assistant.chat
+Escribe una pregunta en la consola. Para finalizar la sesión, escribe:
+salir
+4. Interpretar las fuentes consultadas
+Después de cada respuesta, el programa muestra la sección Fuentes consultadas. Cada entrada identifica el documento y la página de la que procede uno de los fragmentos recuperados.
+
+Estas referencias permiten comprobar qué partes de los PDFs se utilizaron para construir el contexto de la respuesta. Que una fuente aparezca en la lista significa que fue recuperada para la consulta; no implica por sí solo que cada dato de la respuesta proceda de esa fuente.
+Estructura del proyecto
+rag-document-assistant/
+│
+├── data/
+│   └── pdfs/                  # PDFs que se van a indexar
+│
+├── chroma_db/                 # Persistencia local de ChromaDB
+│
+├── rag_assistant/
+│   ├── config.py              # Configuración general
+│   ├── pdf_loader.py          # Extracción de texto y OCR
+│   ├── embeddings.py          # Modelo de embeddings
+│   ├── ingest.py              # Pipeline de ingesta e indexación
+│   └── chat.py                # Recuperación y generación de respuestas
+│
+├── .env                       # Variables privadas (no versionar)
+├── .gitignore
+├── requirements.txt
+└── README.md
+Detalles de implementación
+IDs estables e ingesta incremental
+Los fragmentos reciben identificadores SHA1 reproducibles. Esto permite reconocer los registros asociados a cada documento y gestionar su actualización.
+
+Al reindexar un PDF, el proceso elimina únicamente los registros asociados a ese documento (source) y añade sus nuevos fragmentos. Los demás documentos de la colección se conservan.
+Metadatos
+Los documentos indexados incluyen metadatos para identificar su procedencia y método de extracción:
+Metadato	Descripción
+source	Identificador o ruta del documento de origen utilizado para gestionar la indexación.
+file_name	Nombre del archivo PDF.
+page	Número de página de origen.
+extraction	Método utilizado para extraer el contenido, por ejemplo, texto digital u OCR.
+
+
+Embeddings
+Se utiliza un modelo multilingüe de Hugging Face para representar semánticamente los fragmentos. Los embeddings se normalizan y se generan en CPU, por lo que no es necesario disponer de una GPU.
+
+La primera ejecución puede descargar el modelo y tardar más que las siguientes.
+Salvaguardas del prompt
+El prompt indica al modelo que responda utilizando el contexto recuperado y que reconozca cuando no hay información suficiente.
+
+También incluye una salvaguarda para tratar el contenido de los documentos como datos y no como instrucciones que el modelo deba obedecer. Esto reduce el riesgo de que instrucciones maliciosas incluidas dentro de un PDF alteren el comportamiento esperado del asistente; no constituye una garantía completa frente a prompt injection.
+Estado actual del proyecto
+Estado de la última indexación registrada:
+- PDFs indexados: 3.
+- Fragmentos almacenados: 136.
+Documentos procesados:
+- BT00001837_648.pdf
+- MB582ULV-G.pdf
+- MFL30494101.pdf
+Estas cifras describen el estado de una ejecución concreta. Pueden cambiar al añadir, eliminar o actualizar documentos y volver a ejecutar la ingesta.
+Solución de problemas
+Problema	Posible causa y solución
+Avisos de fontTools	Algunos avisos de fuentes pueden aparecer durante el procesamiento de PDFs. Si la ejecución continúa y el texto se extrae correctamente, normalmente no son bloqueantes.
+Falta la clave de Groq	Comprueba que .env existe en la raíz, que contiene GROQ_API_KEY y que la clave es válida.
+No existe la base vectorial	Ejecuta primero el módulo de ingesta. El chat necesita una colección creada y persistida en chroma_db/.
+Tesseract no se encuentra	Comprueba tesseract --version. Si no está en el PATH, configura TESSERACT_CMD con la ruta completa a tesseract.exe.
+No se obtiene texto de una página	Puede ser una imagen de baja calidad, estar girada, contener escritura manuscrita o no ser legible. Revisa el PDF y la configuración de OCR.
+Primera indexación lenta	El modelo de embeddings puede necesitar descargarse y procesar los documentos en CPU. Las ejecuciones posteriores pueden ser más rápidas.
+El OCR devuelve texto incorrecto	Comprueba que spa.traineddata está instalado, que el idioma configurado es correcto y que la resolución y calidad de la página son suficientes.
+
+
+Seguridad
+- El archivo .env debe permanecer excluido mediante .gitignore.
+- No incluyas API Keys, contraseñas ni credenciales en el código o en el repositorio.
+- Utiliza .env.example para documentar los nombres de las variables sin incluir valores secretos.
+- No subas PDFs privados, confidenciales o protegidos por derechos de terceros sin autorización.
+- La base chroma_db/ se genera localmente y no es necesario versionarla para ejecutar el proyecto desde cero.
+Posibles mejoras futuras
+- Exponer el asistente mediante una API REST con FastAPI.
+- Incorporar una interfaz web para cargar PDFs y realizar consultas.
+- Añadir búsqueda híbrida (semántica y léxica).
+- Incorporar reranking para mejorar la relevancia de los fragmentos.
+- Evaluar la calidad de recuperación y de las respuestas con métricas RAG.
+- Añadir tests automatizados, logging y monitorización.
+- Contenerizar la aplicación con Docker y preparar su despliegue en cloud.
+Tecnologías
+Python · LangChain · ChromaDB · Groq · Hugging Face · Embeddings · PyMuPDF · Tesseract OCR · RAG
